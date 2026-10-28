@@ -23,6 +23,7 @@ h1{font-size:22px;margin:0}
 .status span{color:var(--mute)}
 .map{width:100%;height:58vh;min-height:300px;border:0;border-radius:12px;background:var(--card);display:block}
 .btn{display:block;text-align:center;background:var(--amber);color:#1b1e1a;font-weight:700;text-decoration:none;border-radius:10px;padding:13px}
+.btn.alt{background:transparent;color:var(--fg);border:1px solid var(--line);font-weight:600}
 .small{color:var(--mute);font-size:14px;margin:0}
 [hidden]{display:none!important}
 </style>
@@ -33,6 +34,7 @@ h1{font-size:22px;margin:0}
   <div class="status" role="status"><i class="dot" id="dot"></i><div><b id="head">Loading...</b><span id="sub"></span></div></div>
   <iframe class="map" id="map" title="Map of the van's position" hidden></iframe>
   <a class="btn" id="open" target="_blank" rel="noopener" hidden>Open in Google Maps</a>
+  <a class="btn alt" id="open2" target="_blank" rel="noopener" hidden>Open last GPS position</a>
   <p class="small" id="foot"></p>
 </main>
 <script>
@@ -42,8 +44,9 @@ let shown="",timer=null;
 const fmt=t=>new Date(t*1000).toLocaleString([],{weekday:"short",day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
 const ago=t=>{const m=Math.round((Date.now()/1000-t)/60);return m<1?"just now":m===1?"1 minute ago":m<120?m+" minutes ago":Math.round(m/60)+" hours ago"};
 function state(cls,head,sub){$("dot").className="dot "+cls;$("head").textContent=head;$("sub").textContent=sub||""}
+const km=m=>m>=1000?(m/1000).toFixed(1)+" km":Math.round(m)+" m";
 function finish(head,sub){
-  state("bad",head,sub);$("map").hidden=true;$("open").hidden=true;$("foot").textContent="";
+  state("bad",head,sub);$("map").hidden=true;$("open").hidden=true;$("open2").hidden=true;$("foot").textContent="";
   if(timer)clearInterval(timer);
 }
 async function load(){
@@ -56,19 +59,27 @@ async function load(){
   try{const g=await r.json();v=JSON.parse(g.files["van.json"].content)}catch(e){state("warn","Can't read the position","Trying again every minute.");return}
   const now=Date.now()/1000;
   if(v.until&&now>v.until){finish("This tracking link has expired","Links stop working 48 hours after an alert. If you still need to know where the van is, contact Rich.");return}
-  if(v.lat==null){state("warn","No position yet","The van hasn't had a GPS fix since it last started up. Trying again every minute.");return}
+  const rough=!v.gps&&v.alat!=null;  // no GPS: rough position from the mobile mast it's using
+  if(v.lat==null&&!rough){state("warn","No position yet","The van hasn't had a GPS fix since it last started up. Trying again every minute.");return}
   const stale=now-v.checked>300;
+  // With no GPS, show the mast's rough area if the van has switched to a mast it never uses when parked
+  const useRough=rough&&(v.newmast||v.lat==null);
   if(stale)state("warn","The van has stopped reporting","It last checked in "+ago(v.checked)+". It may be out of signal or switched off. The map shows its last known position.");
   else if(v.gps)state("ok","Live position","Updated "+ago(v.fix_at)+". This page refreshes itself every minute.");
-  else state("warn","GPS signal lost","The van is online but can't see its position. This is where it was "+ago(v.fix_at)+".");
-  const q=v.lat+","+v.lon;
-  if(q!==shown){
-    $("map").src="https://maps.google.com/maps?q="+q+"&z=16&output=embed";
+  else if(v.newmast)state("bad","GPS lost, and the van has moved to a different mobile mast","It's probably on the move. "+(rough?"The map shows the rough area of the mast it's using now (within about "+km(v.arange)+"), updated "+ago(v.checked)+".":"There's no rough position for this mast.")+(v.lat!=null?" Its last GPS position was "+ago(v.fix_at)+".":""));
+  else state("warn","GPS signal lost","The van is online but can't see its position. It's still using a mobile mast it uses where it's parked, so it probably hasn't moved."+(v.lat!=null?" The map shows where it was "+ago(v.fix_at)+".":" The map shows the rough area of the mast (within about "+km(v.arange)+")."));
+  const q=useRough?v.alat+","+v.alon:v.lat+","+v.lon;
+  const z=useRough?(v.arange>3000?12:v.arange>1200?13:14):16;
+  if(q+z!==shown){
+    $("map").src="https://maps.google.com/maps?q="+q+"&z="+z+"&output=embed";
     $("open").href="https://maps.google.com/?q="+q;
-    shown=q;
+    shown=q+z;
   }
+  $("open").textContent=useRough?"Open rough position in Google Maps":"Open in Google Maps";
+  $("open2").hidden=!(useRough&&v.lat!=null);
+  if(v.lat!=null)$("open2").href="https://maps.google.com/?q="+v.lat+","+v.lon;
   $("map").hidden=false;$("open").hidden=false;
-  $("foot").textContent="Position from "+fmt(v.fix_at)+". This link stops working on "+fmt(v.until)+".";
+  $("foot").textContent=(useRough?"Rough position from the mobile mast, "+fmt(v.checked):"Position from "+fmt(v.fix_at))+". This link stops working on "+fmt(v.until)+".";
 }
 if(!/^[0-9a-f]{20,40}$/.test(id)){
   finish("Nothing to show","Open the tracking link from the alert text.");
